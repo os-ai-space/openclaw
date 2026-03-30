@@ -620,6 +620,33 @@ describe("config cli", () => {
       });
     });
 
+    it("fails early when unsupported mutable paths are assigned SecretRef objects (builder mode)", async () => {
+      const resolved: OpenClawConfig = {
+        gateway: { port: 18789 },
+      };
+      setSnapshot(resolved, resolved);
+
+      await expect(
+        runConfigCommand([
+          "config",
+          "set",
+          "hooks.token",
+          "--ref-provider",
+          "default",
+          "--ref-source",
+          "env",
+          "--ref-id",
+          "HOOK_TOKEN",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining("Config policy validation failed: unsupported SecretRef usage"),
+      );
+      expect(mockError).toHaveBeenCalledWith(expect.stringContaining("hooks.token"));
+    });
+
     it("supports provider builder mode under secrets.providers.<alias>", async () => {
       const resolved: OpenClawConfig = {
         gateway: { port: 18789 },
@@ -705,6 +732,58 @@ describe("config cli", () => {
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       expect(mockError).toHaveBeenCalledWith(
         expect.stringContaining("Dry run failed: config schema validation failed."),
+      );
+    });
+
+    it("fails dry-run when unsupported mutable paths receive SecretRef objects in value/json mode", async () => {
+      const resolved: OpenClawConfig = {
+        gateway: { port: 18789 },
+        secrets: {
+          providers: {
+            default: { source: "env" },
+          },
+        },
+      };
+      setSnapshot(resolved, resolved);
+
+      await expect(
+        runConfigCommand([
+          "config",
+          "set",
+          "hooks.token",
+          '{"source":"env","provider":"default","id":"HOOK_TOKEN"}',
+          "--strict-json",
+          "--dry-run",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining("Dry run failed: config schema validation failed."),
+      );
+      expect(mockError).toHaveBeenCalledWith(expect.stringContaining("hooks.token"));
+    });
+
+    it("aggregates policy failures across batch entries", async () => {
+      const resolved: OpenClawConfig = {
+        gateway: { port: 18789 },
+      };
+      setSnapshot(resolved, resolved);
+
+      await expect(
+        runConfigCommand([
+          "config",
+          "set",
+          "--batch-json",
+          '[{"path":"hooks.token","ref":{"source":"env","provider":"default","id":"HOOK_TOKEN"}},{"path":"commands.ownerDisplaySecret","ref":{"source":"env","provider":"default","id":"OWNER_DISPLAY_SECRET"}}]',
+          "--dry-run",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockError).toHaveBeenCalledWith(expect.stringContaining("hooks.token"));
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining("commands.ownerDisplaySecret"),
       );
     });
 

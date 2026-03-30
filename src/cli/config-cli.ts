@@ -15,7 +15,10 @@ import {
   type SecretRef,
   type SecretRefSource,
 } from "../config/types.secrets.js";
-import { validateConfigObjectRaw } from "../config/validation.js";
+import {
+  collectUnsupportedSecretRefPolicyIssues,
+  validateConfigObjectRaw,
+} from "../config/validation.js";
 import { SecretProviderSchema } from "../config/zod-schema.core.js";
 import { danger, info, success } from "../globals.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
@@ -90,6 +93,7 @@ const CONFIG_SET_DESCRIPTION = [
   CONFIG_SET_EXAMPLE_PROVIDER,
   CONFIG_SET_EXAMPLE_BATCH,
 ].join("\n");
+const CONFIG_SET_POLICY_ERROR_MAX_ISSUES = 5;
 
 class ConfigSetDryRunValidationError extends Error {
   constructor(readonly result: ConfigSetDryRunResult) {
@@ -177,6 +181,82 @@ function hasOwnPathKey(value: Record<string, unknown>, key: string): boolean {
 
 function formatDoctorHint(message: string): string {
   return `Run \`${formatCliCommand("openclaw doctor")}\` ${message}`;
+}
+
+function isUnsupportedSecretRefPolicyPath(path: PathSegment[]): boolean {
+  if (path.length === 0) {
+    return false;
+  }
+
+  if (path.length === 2 && path[0] === "commands" && path[1] === "ownerDisplaySecret") {
+    return true;
+  }
+  if (path.length === 2 && path[0] === "hooks" && path[1] === "token") {
+    return true;
+  }
+  if (path.length === 3 && path[0] === "hooks" && path[1] === "gmail" && path[2] === "pushToken") {
+    return true;
+  }
+  if (
+    path.length >= 4 &&
+    path[0] === "hooks" &&
+    path[1] === "mappings" &&
+    isIndexSegment(path[2] ?? "") &&
+    path[3] === "sessionKey"
+  ) {
+    return true;
+  }
+  if (
+    path.length === 4 &&
+    path[0] === "channels" &&
+    path[1] === "discord" &&
+    path[2] === "threadBindings" &&
+    path[3] === "webhookToken"
+  ) {
+    return true;
+  }
+  if (
+    path.length === 6 &&
+    path[0] === "channels" &&
+    path[1] === "discord" &&
+    path[2] === "accounts" &&
+    path[4] === "threadBindings" &&
+    path[5] === "webhookToken"
+  ) {
+    return true;
+  }
+  if (
+    path.length === 4 &&
+    path[0] === "channels" &&
+    path[1] === "whatsapp" &&
+    path[2] === "creds" &&
+    path[3] === "json"
+  ) {
+    return true;
+  }
+  if (
+    path.length === 6 &&
+    path[0] === "channels" &&
+    path[1] === "whatsapp" &&
+    path[2] === "accounts" &&
+    path[4] === "creds" &&
+    path[5] === "json"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function formatUnsupportedSecretRefPolicyFailureMessage(issues: string[]): string {
+  const lines = [
+    "Config policy validation failed: unsupported SecretRef usage was detected.",
+    ...issues.slice(0, CONFIG_SET_POLICY_ERROR_MAX_ISSUES).map((issue) => `- ${issue}`),
+  ];
+  if (issues.length > CONFIG_SET_POLICY_ERROR_MAX_ISSUES) {
+    lines.push(`- ... ${issues.length - CONFIG_SET_POLICY_ERROR_MAX_ISSUES} more`);
+  }
+  return lines.join("\n");
 }
 
 function validatePathSegments(path: PathSegment[]): void {
@@ -992,6 +1072,15 @@ export async function runConfigSet(opts: {
       operations,
     });
     const nextConfig = next as OpenClawConfig;
+    const shouldRunPolicyValidation = operations.some((operation) =>
+      isUnsupportedSecretRefPolicyPath(operation.requestedPath),
+    );
+    const policyIssues = shouldRunPolicyValidation
+      ? collectUnsupportedSecretRefPolicyIssues(nextConfig)
+      : [];
+    const policyIssueLines = formatConfigIssueLines(policyIssues, "", { normalizeRoot: true }).map(
+      (line) => line.trim(),
+    );
 
     if (opts.cliOptions.dryRun) {
       const hasJsonMode = operations.some((operation) => operation.inputMode === "json");
@@ -1008,6 +1097,14 @@ export async function runConfigSet(opts: {
         allowExecInDryRun: Boolean(opts.cliOptions.allowExec),
       });
       const errors: ConfigSetDryRunError[] = [];
+      if (policyIssueLines.length > 0) {
+        errors.push(
+          ...policyIssueLines.map((message) => ({
+            kind: "schema" as const,
+            message,
+          })),
+        );
+      }
       if (hasJsonMode) {
         errors.push(...collectDryRunSchemaErrors(nextConfig));
       }
@@ -1031,7 +1128,7 @@ export async function runConfigSet(opts: {
         configPath: shortenHomePath(snapshot.path),
         inputModes: [...new Set(operations.map((operation) => operation.inputMode))],
         checks: {
-          schema: hasJsonMode,
+          schema: hasJsonMode || shouldRunPolicyValidation,
           resolvability: hasJsonMode || hasBuilderMode,
           resolvabilityComplete:
             (hasJsonMode || hasBuilderMode) && selectedDryRunRefs.skippedExecRefs.length === 0,
@@ -1075,6 +1172,9 @@ export async function runConfigSet(opts: {
         );
       }
       return;
+    }
+    if (policyIssueLines.length > 0) {
+      throw new Error(formatUnsupportedSecretRefPolicyFailureMessage(policyIssueLines));
     }
 
     await replaceConfigFile({
