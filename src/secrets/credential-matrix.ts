@@ -1,4 +1,5 @@
 import { listSecretTargetRegistryEntries } from "./target-registry.js";
+import { UNSUPPORTED_SECRETREF_SURFACE_PATTERNS } from "./unsupported-surface-policy.js";
 
 type CredentialMatrixEntry = {
   id: string;
@@ -19,18 +20,6 @@ export type SecretRefCredentialMatrixDocument = {
   excludedMutableOrRuntimeManaged: string[];
   entries: CredentialMatrixEntry[];
 };
-
-const EXCLUDED_MUTABLE_OR_RUNTIME_MANAGED = [
-  "commands.ownerDisplaySecret",
-  "hooks.token",
-  "hooks.gmail.pushToken",
-  "hooks.mappings[].sessionKey",
-  "auth-profiles.oauth.*",
-  "channels.discord.threadBindings.webhookToken",
-  "channels.discord.accounts.*.threadBindings.webhookToken",
-  "channels.whatsapp.creds.json",
-  "channels.whatsapp.accounts.*.creds.json",
-];
 
 export function buildSecretRefCredentialMatrix(): SecretRefCredentialMatrixDocument {
   const entries: CredentialMatrixEntry[] = listSecretTargetRegistryEntries()
@@ -54,7 +43,7 @@ export function buildSecretRefCredentialMatrix(): SecretRefCredentialMatrixDocum
     pathSyntax: 'Dot path with "*" for map keys and "[]" for arrays.',
     scope:
       "Credentials that are strictly user-supplied and not minted/rotated by OpenClaw runtime.",
-    excludedMutableOrRuntimeManaged: [...EXCLUDED_MUTABLE_OR_RUNTIME_MANAGED],
+    excludedMutableOrRuntimeManaged: [...UNSUPPORTED_SECRETREF_SURFACE_PATTERNS],
     entries,
   };
 }

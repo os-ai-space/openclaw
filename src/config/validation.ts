@@ -11,6 +11,7 @@ import {
 import { loadPluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { validateJsonSchemaValue } from "../plugins/schema-validator.js";
 import { hasKind } from "../plugins/slots.js";
+import { collectUnsupportedSecretRefConfigCandidates } from "../secrets/unsupported-surface-policy.js";
 import {
   hasAvatarUriScheme,
   isAvatarDataUrl,
@@ -289,102 +290,9 @@ function pushUnsupportedMutableSecretRefIssue(
 }
 
 function collectUnsupportedMutableSecretRefIssues(raw: unknown): ConfigValidationIssue[] {
-  if (!isRecord(raw)) {
-    return [];
-  }
-
   const issues: ConfigValidationIssue[] = [];
-
-  const commands = isRecord(raw.commands) ? raw.commands : null;
-  if (commands) {
-    pushUnsupportedMutableSecretRefIssue(
-      issues,
-      "commands.ownerDisplaySecret",
-      commands.ownerDisplaySecret,
-    );
-  }
-
-  const hooks = isRecord(raw.hooks) ? raw.hooks : null;
-  if (hooks) {
-    pushUnsupportedMutableSecretRefIssue(issues, "hooks.token", hooks.token);
-
-    const gmail = isRecord(hooks.gmail) ? hooks.gmail : null;
-    if (gmail) {
-      pushUnsupportedMutableSecretRefIssue(issues, "hooks.gmail.pushToken", gmail.pushToken);
-    }
-
-    const mappings = hooks.mappings;
-    if (Array.isArray(mappings)) {
-      for (const [index, mapping] of mappings.entries()) {
-        if (!isRecord(mapping)) {
-          continue;
-        }
-        pushUnsupportedMutableSecretRefIssue(
-          issues,
-          `hooks.mappings.${index}.sessionKey`,
-          mapping.sessionKey,
-        );
-      }
-    }
-  }
-
-  const channels = isRecord(raw.channels) ? raw.channels : null;
-  if (channels) {
-    const discord = isRecord(channels.discord) ? channels.discord : null;
-    if (discord) {
-      const threadBindings = isRecord(discord.threadBindings) ? discord.threadBindings : null;
-      if (threadBindings) {
-        pushUnsupportedMutableSecretRefIssue(
-          issues,
-          "channels.discord.threadBindings.webhookToken",
-          threadBindings.webhookToken,
-        );
-      }
-      const accounts = isRecord(discord.accounts) ? discord.accounts : null;
-      if (accounts) {
-        for (const [accountId, account] of Object.entries(accounts)) {
-          if (!isRecord(account)) {
-            continue;
-          }
-          const accountThreadBindings = isRecord(account.threadBindings)
-            ? account.threadBindings
-            : null;
-          if (!accountThreadBindings) {
-            continue;
-          }
-          pushUnsupportedMutableSecretRefIssue(
-            issues,
-            `channels.discord.accounts.${accountId}.threadBindings.webhookToken`,
-            accountThreadBindings.webhookToken,
-          );
-        }
-      }
-    }
-
-    const whatsapp = isRecord(channels.whatsapp) ? channels.whatsapp : null;
-    if (whatsapp) {
-      const creds = isRecord(whatsapp.creds) ? whatsapp.creds : null;
-      if (creds) {
-        pushUnsupportedMutableSecretRefIssue(issues, "channels.whatsapp.creds.json", creds.json);
-      }
-      const accounts = isRecord(whatsapp.accounts) ? whatsapp.accounts : null;
-      if (accounts) {
-        for (const [accountId, account] of Object.entries(accounts)) {
-          if (!isRecord(account)) {
-            continue;
-          }
-          const accountCreds = isRecord(account.creds) ? account.creds : null;
-          if (!accountCreds) {
-            continue;
-          }
-          pushUnsupportedMutableSecretRefIssue(
-            issues,
-            `channels.whatsapp.accounts.${accountId}.creds.json`,
-            accountCreds.json,
-          );
-        }
-      }
-    }
+  for (const candidate of collectUnsupportedSecretRefConfigCandidates(raw)) {
+    pushUnsupportedMutableSecretRefIssue(issues, candidate.path, candidate.value);
   }
 
   return issues;
