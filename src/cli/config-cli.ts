@@ -183,71 +183,6 @@ function formatDoctorHint(message: string): string {
   return `Run \`${formatCliCommand("openclaw doctor")}\` ${message}`;
 }
 
-function isUnsupportedSecretRefPolicyPath(path: PathSegment[]): boolean {
-  if (path.length === 0) {
-    return false;
-  }
-
-  if (path.length === 2 && path[0] === "commands" && path[1] === "ownerDisplaySecret") {
-    return true;
-  }
-  if (path.length === 2 && path[0] === "hooks" && path[1] === "token") {
-    return true;
-  }
-  if (path.length === 3 && path[0] === "hooks" && path[1] === "gmail" && path[2] === "pushToken") {
-    return true;
-  }
-  if (
-    path.length >= 4 &&
-    path[0] === "hooks" &&
-    path[1] === "mappings" &&
-    isIndexSegment(path[2] ?? "") &&
-    path[3] === "sessionKey"
-  ) {
-    return true;
-  }
-  if (
-    path.length === 4 &&
-    path[0] === "channels" &&
-    path[1] === "discord" &&
-    path[2] === "threadBindings" &&
-    path[3] === "webhookToken"
-  ) {
-    return true;
-  }
-  if (
-    path.length === 6 &&
-    path[0] === "channels" &&
-    path[1] === "discord" &&
-    path[2] === "accounts" &&
-    path[4] === "threadBindings" &&
-    path[5] === "webhookToken"
-  ) {
-    return true;
-  }
-  if (
-    path.length === 4 &&
-    path[0] === "channels" &&
-    path[1] === "whatsapp" &&
-    path[2] === "creds" &&
-    path[3] === "json"
-  ) {
-    return true;
-  }
-  if (
-    path.length === 6 &&
-    path[0] === "channels" &&
-    path[1] === "whatsapp" &&
-    path[2] === "accounts" &&
-    path[4] === "creds" &&
-    path[5] === "json"
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
 function formatUnsupportedSecretRefPolicyFailureMessage(issues: string[]): string {
   const lines = [
     "Config policy validation failed: unsupported SecretRef usage was detected.",
@@ -991,6 +926,20 @@ function collectDryRunSchemaErrors(config: OpenClawConfig): ConfigSetDryRunError
   }));
 }
 
+function dedupeDryRunErrors(errors: ConfigSetDryRunError[]): ConfigSetDryRunError[] {
+  const deduped: ConfigSetDryRunError[] = [];
+  const seen = new Set<string>();
+  for (const error of errors) {
+    const key = `${error.kind}\u0000${error.message}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(error);
+  }
+  return deduped;
+}
+
 function formatDryRunFailureMessage(params: {
   errors: ConfigSetDryRunError[];
   skippedExecRefs: number;
@@ -1072,12 +1021,7 @@ export async function runConfigSet(opts: {
       operations,
     });
     const nextConfig = next as OpenClawConfig;
-    const shouldRunPolicyValidation = operations.some((operation) =>
-      isUnsupportedSecretRefPolicyPath(operation.requestedPath),
-    );
-    const policyIssues = shouldRunPolicyValidation
-      ? collectUnsupportedSecretRefPolicyIssues(nextConfig)
-      : [];
+    const policyIssues = collectUnsupportedSecretRefPolicyIssues(nextConfig);
     const policyIssueLines = formatConfigIssueLines(policyIssues, "", { normalizeRoot: true }).map(
       (line) => line.trim(),
     );
@@ -1097,7 +1041,7 @@ export async function runConfigSet(opts: {
         allowExecInDryRun: Boolean(opts.cliOptions.allowExec),
       });
       const errors: ConfigSetDryRunError[] = [];
-      if (policyIssueLines.length > 0) {
+      if (!hasJsonMode && policyIssueLines.length > 0) {
         errors.push(
           ...policyIssueLines.map((message) => ({
             kind: "schema" as const,
@@ -1122,28 +1066,29 @@ export async function runConfigSet(opts: {
           })),
         );
       }
+      const dedupedErrors = dedupeDryRunErrors(errors);
       const dryRunResult: ConfigSetDryRunResult = {
-        ok: errors.length === 0,
+        ok: dedupedErrors.length === 0,
         operations: operations.length,
         configPath: shortenHomePath(snapshot.path),
         inputModes: [...new Set(operations.map((operation) => operation.inputMode))],
         checks: {
-          schema: hasJsonMode || shouldRunPolicyValidation,
+          schema: hasJsonMode || policyIssueLines.length > 0,
           resolvability: hasJsonMode || hasBuilderMode,
           resolvabilityComplete:
             (hasJsonMode || hasBuilderMode) && selectedDryRunRefs.skippedExecRefs.length === 0,
         },
         refsChecked: selectedDryRunRefs.refsToResolve.length,
         skippedExecRefs: selectedDryRunRefs.skippedExecRefs.length,
-        ...(errors.length > 0 ? { errors } : {}),
+        ...(dedupedErrors.length > 0 ? { errors: dedupedErrors } : {}),
       };
-      if (errors.length > 0) {
+      if (dedupedErrors.length > 0) {
         if (opts.cliOptions.json) {
           throw new ConfigSetDryRunValidationError(dryRunResult);
         }
         throw new Error(
           formatDryRunFailureMessage({
-            errors,
+            errors: dedupedErrors,
             skippedExecRefs: selectedDryRunRefs.skippedExecRefs.length,
           }),
         );

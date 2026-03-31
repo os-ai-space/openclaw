@@ -647,6 +647,29 @@ describe("config cli", () => {
       expect(mockError).toHaveBeenCalledWith(expect.stringContaining("hooks.token"));
     });
 
+    it("fails early when parent-object writes include unsupported SecretRef objects", async () => {
+      const resolved: OpenClawConfig = {
+        gateway: { port: 18789 },
+      };
+      setSnapshot(resolved, resolved);
+
+      await expect(
+        runConfigCommand([
+          "config",
+          "set",
+          "hooks",
+          '{"token":{"source":"env","provider":"default","id":"HOOK_TOKEN"}}',
+          "--strict-json",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining("Config policy validation failed: unsupported SecretRef usage"),
+      );
+      expect(mockError).toHaveBeenCalledWith(expect.stringContaining("hooks.token"));
+    });
+
     it("supports provider builder mode under secrets.providers.<alias>", async () => {
       const resolved: OpenClawConfig = {
         gateway: { port: 18789 },
@@ -785,6 +808,41 @@ describe("config cli", () => {
       expect(mockError).toHaveBeenCalledWith(
         expect.stringContaining("commands.ownerDisplaySecret"),
       );
+    });
+
+    it("does not duplicate policy errors in --dry-run --json mode for parent-object writes", async () => {
+      const resolved: OpenClawConfig = {
+        gateway: { port: 18789 },
+      };
+      setSnapshot(resolved, resolved);
+
+      await expect(
+        runConfigCommand([
+          "config",
+          "set",
+          "hooks",
+          '{"token":{"source":"env","provider":"default","id":"HOOK_TOKEN"}}',
+          "--strict-json",
+          "--dry-run",
+          "--json",
+        ]),
+      ).rejects.toThrow("__exit__:1");
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const raw = mockLog.mock.calls.at(-1)?.[0];
+      expect(typeof raw).toBe("string");
+      const payload = JSON.parse(String(raw)) as {
+        ok: boolean;
+        checks: { schema: boolean; resolvability: boolean; resolvabilityComplete: boolean };
+        errors?: Array<{ kind: string; message: string; ref?: string }>;
+      };
+      expect(payload.ok).toBe(false);
+      expect(payload.checks.schema).toBe(true);
+      const hooksTokenErrors =
+        payload.errors?.filter(
+          (entry) => entry.kind === "schema" && entry.message.includes("hooks.token"),
+        ) ?? [];
+      expect(hooksTokenErrors).toHaveLength(1);
     });
 
     it("logs a dry-run note when value mode performs no validation checks", async () => {
