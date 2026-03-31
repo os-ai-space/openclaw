@@ -6,6 +6,7 @@ import {
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { authorizeOperatorScopesForMethod } from "../method-scopes.js";
 import { makeMockHttpResponse } from "../test-http-response.js";
 import { createTestRegistry } from "./__tests__/test-utils.js";
 import { createGatewayPluginRequestHandler } from "./plugins-http.js";
@@ -25,55 +26,75 @@ function createRoute(params: {
   };
 }
 
+function assertWriteHelperAllowed() {
+  const scopes = getPluginRuntimeGatewayRequestScope()?.client?.connect?.scopes ?? [];
+  const auth = authorizeOperatorScopesForMethod("agent", scopes);
+  if (!auth.allowed) {
+    throw new Error(`missing scope: ${auth.missingScope}`);
+  }
+}
+
 describe("plugin HTTP route runtime scopes", () => {
   afterEach(() => {
     releasePinnedPluginHttpRouteRegistry();
     setActivePluginRegistry(createEmptyPluginRegistry());
   });
 
-  it.each([
-    {
-      auth: "plugin" as const,
+  async function invokeRoute(params: {
+    path: string;
+    auth: "gateway" | "plugin";
+    gatewayAuthSatisfied: boolean;
+  }) {
+    const log = { warn: vi.fn() } as Parameters<typeof createGatewayPluginRequestHandler>[0]["log"];
+    const handler = createGatewayPluginRequestHandler({
+      registry: createTestRegistry({
+        httpRoutes: [
+          createRoute({
+            path: params.path,
+            auth: params.auth,
+            handler: async () => {
+              assertWriteHelperAllowed();
+              return true;
+            },
+          }),
+        ],
+      }),
+      log,
+    });
+
+    const response = makeMockHttpResponse();
+    const handled = await handler(
+      { url: params.path } as IncomingMessage,
+      response.res,
+      undefined,
+      { gatewayAuthSatisfied: params.gatewayAuthSatisfied },
+    );
+    return { handled, log, ...response };
+  }
+
+  it("keeps plugin-auth routes off write-capable runtime helpers", async () => {
+    const { handled, res, setHeader, end, log } = await invokeRoute({
+      path: "/hook",
+      auth: "plugin",
       gatewayAuthSatisfied: false,
-      expectedScopes: ["operator.read"],
-    },
-    {
-      auth: "gateway" as const,
+    });
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(500);
+    expect(setHeader).toHaveBeenCalledWith("Content-Type", "text/plain; charset=utf-8");
+    expect(end).toHaveBeenCalledWith("Internal Server Error");
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("missing scope: operator.write"));
+  });
+
+  it("preserves write-capable runtime helpers on gateway-auth routes", async () => {
+    const { handled, res, log } = await invokeRoute({
+      path: "/secure-hook",
+      auth: "gateway",
       gatewayAuthSatisfied: true,
-      expectedScopes: ["operator.write"],
-    },
-  ])(
-    "maps $auth routes to $expectedScopes",
-    async ({ auth, gatewayAuthSatisfied, expectedScopes }) => {
-      let observedScopes: string[] | undefined;
-      const handler = createGatewayPluginRequestHandler({
-        registry: createTestRegistry({
-          httpRoutes: [
-            createRoute({
-              path: auth === "plugin" ? "/hook" : "/secure-hook",
-              auth,
-              handler: vi.fn(async () => {
-                observedScopes =
-                  getPluginRuntimeGatewayRequestScope()?.client?.connect?.scopes?.slice() ?? [];
-                return true;
-              }),
-            }),
-          ],
-        }),
-        log: { warn: vi.fn() } as Parameters<typeof createGatewayPluginRequestHandler>[0]["log"],
-      });
+    });
 
-      const { res } = makeMockHttpResponse();
-      const handled = await handler(
-        { url: auth === "plugin" ? "/hook" : "/secure-hook" } as IncomingMessage,
-        res,
-        undefined,
-        { gatewayAuthSatisfied },
-      );
-
-      expect(handled).toBe(true);
-      expect(res.statusCode).toBe(200);
-      expect(observedScopes).toEqual(expectedScopes);
-    },
-  );
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
 });
