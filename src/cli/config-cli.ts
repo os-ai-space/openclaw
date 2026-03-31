@@ -930,7 +930,10 @@ function dedupeDryRunErrors(errors: ConfigSetDryRunError[]): ConfigSetDryRunErro
   const deduped: ConfigSetDryRunError[] = [];
   const seen = new Set<string>();
   for (const error of errors) {
-    const key = `${error.kind}\u0000${error.message}`;
+    const key =
+      error.kind === "resolvability"
+        ? `${error.kind}\u0000${error.ref ?? ""}\u0000${error.message}`
+        : `${error.kind}\u0000${error.message}`;
     if (seen.has(key)) {
       continue;
     }
